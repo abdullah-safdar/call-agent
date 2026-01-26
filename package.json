@@ -1,0 +1,39 @@
+{
+  "name": "elevenlabs-twilio-websocket",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "tsx src/app.ts",
+    "dev": "tsx watch src/app.ts",
+    "load-menus": "tsx src/scripts/loadMenus.ts"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@elevenlabs/elevenlabs-js": "^2.16.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "@types/express-ws": "^3.0.5",
+    "@types/ws": "^8.18.1",
+    "axios": "^1.12.2",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.2",
+    "express": "^5.1.0",
+    "express-ws": "^5.0.2",
+    "mongoose": "^9.1.5",
+    "node-fetch": "^3.3.2",
+    "openai": "^5.23.0",
+    "redis": "^5.8.3",
+    "tsx": "^4.20.5",
+    "twilio": "^5.9.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/mongoose": "^5.11.96",
+    "@types/node": "^24.8.1",
+    "@types/redis": "^4.0.10",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}
