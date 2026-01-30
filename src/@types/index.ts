@@ -14,7 +14,12 @@ export interface ConversationEntry {
 export const activeCalls = new Map<string, {
   customerPhone: string;
   campaign: MarketingCampaign;
-  callSid?: string;
+  // ElevenLabs conversation id (conv_...)
+  conversationId?: string;
+  // Twilio call sid (CA...)
+  twilioCallSid?: string;
+  // internal / debug
+  lastStatus?: string;
   conversation: ConversationEntry[];
   startedAt: Date;
 }>();

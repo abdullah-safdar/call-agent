@@ -1,80 +1,116 @@
 import { Request, Response } from "express";
-import Twilio from "twilio";
 import { MarketingCampaign } from "../../@types";
-import { TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER, SERVER_URL, DEBUG_VERBOSE, ELEVEN_LABS_VOICE_ID, ELEVEN_LABS_API_KEY, REALTIME_MODEL, OPENAI_API_KEY } from "../../constants";
+import {
+  DEBUG_VERBOSE,
+  ELEVEN_LABS_AGENT_ID,
+  ELEVEN_LABS_API_KEY,
+  ELEVEN_LABS_AGENT_PHONE_NUMBER_ID,
+} from "../../constants";
 import { activeCalls } from "../../@types";
 import CallLog from "../../schemas/calllog.schema";
 import { ts } from "../../utils";
-import { buildMarketingInstructions, determineOutcome } from "../prompt";
-import mongoose from "mongoose";
-import { WebSocket } from "ws";
+import { determineOutcome } from "../prompt";
+import { upsertCallState, getCallIdByConversationId } from "./callState";
+import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 
-// Initialize Twilio client
-const twilioClient = Twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+// Initialize ElevenLabs client globally
+const elevenLabsClient = new ElevenLabsClient({
+  environment: "https://api.elevenlabs.io",
+  apiKey: ELEVEN_LABS_API_KEY,
+});
 
-
-export const initiateCall = async (req: Request, res: Response) => {
-  const { customerPhone, campaign } = req.body as {
-    customerPhone: string;
-    campaign: MarketingCampaign;
-  };
-
-  if (!customerPhone) {
-    return res.status(400).json({ error: "customerPhone is required" });
-  }
-
-  if (!campaign || !campaign.name) {
-    return res.status(400).json({
-      error: "campaign with name is required",
-    });
-  }
-
-  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER) {
-    return res.status(500).json({ error: "Twilio credentials not configured" });
-  }
-
-  if (!SERVER_URL) {
-    return res.status(500).json({
-      error: "SERVER_URL not configured. Set SERVER_URL to your public URL (e.g., ngrok URL like https://abc123.ngrok.io)"
-    });
-  }
-
+// core call mechanism endpoint
+export async function initiateCall(req: Request, res: Response) {
   try {
+    const { customerPhone, campaign } = req.body as {
+      customerPhone: string;
+      campaign: MarketingCampaign;
+    };
+
+    if (!customerPhone) {
+      return res.status(400).json({ error: "customerPhone is required" });
+    }
+
+    if (!campaign || !campaign.name) {
+      return res.status(400).json({ error: "campaign with name is required" });
+    }
+
     const callId = `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-    // Store call data for when the call connects
+    console.log(`[${ts()}] 📞 Initiating outbound call to ${customerPhone}`);
+    console.log(`[${ts()}] 📣 Campaign: ${campaign.name}`);
+
+    // Initiate call via ElevenLabs native Twilio integration
+    const callResponse =
+      await elevenLabsClient.conversationalAi.twilio.outboundCall({
+        agentId: ELEVEN_LABS_AGENT_ID,
+        agentPhoneNumberId: ELEVEN_LABS_AGENT_PHONE_NUMBER_ID,
+        toNumber: customerPhone,
+        conversationInitiationClientData: {
+          dynamicVariables: {
+            campaign_name: campaign.name,
+            campaign_details: campaign.prompt,
+            call_id: callId, // Pass callId as dynamic variable for webhook matching
+          },
+        },
+      });
+
+    console.log(`[${ts()}] 📥 ElevenLabs call response:`, callResponse);
+
+    // Log full response to debug structure
+    if (DEBUG_VERBOSE) {
+      console.log(
+        `[${ts()}] 📋 ElevenLabs response:`,
+        JSON.stringify(callResponse, null, 2),
+      );
+    }
+
+    // Extract conversation ID from response (try multiple possible structures)
+    const conversationId =
+      (callResponse as any)?.conversationId ||
+      // (callResponse as any)?.id ||
+      // (callResponse as any)?.data?.conversation_id ||
+      // (callResponse as any)?.conversationId ||
+      // (callResponse as any)?.result?.conversation_id ||
+      null;
+
+    // Twilio CallSid returned by ElevenLabs native integration (CA...)
+    const twilioCallSid =
+      (callResponse as any)?.callSid ||
+      // (callResponse as any)?.call_sid ||
+      // (callResponse as any)?.data?.callSid ||
+      null;
+
+    console.log(
+      `[${ts()}] ✅ Call initiated, conversation ID: ${conversationId || "pending (will match by phone number)"}`,
+    );
+
+    // Store call data for tracking
     activeCalls.set(callId, {
       customerPhone,
       campaign,
       conversation: [],
       startedAt: new Date(),
+      conversationId: conversationId || undefined,
+      twilioCallSid: twilioCallSid || undefined,
     });
 
-    console.log(`[${ts()}] 📞 Initiating outbound call to ${customerPhone}`);
-    console.log(`[${ts()}] 📣 Campaign: ${campaign.name} `);
-    console.log(`[${ts()}] 🌐 Using webhook URL: ${SERVER_URL}`);
-
-    // Initiate the call via Twilio
-    const call = await twilioClient.calls.create({
-      to: customerPhone,
-      from: TWILIO_PHONE_NUMBER,
-      url: `${SERVER_URL}/call/outbound-connect?callId=${encodeURIComponent(callId)}`,
-      statusCallback: `${SERVER_URL}/call/status?callId=${encodeURIComponent(callId)}`,
-      statusCallbackEvent: ["initiated", "ringing", "answered", "completed"],
-      statusCallbackMethod: "POST",
+    await upsertCallState({
+      callId,
+      customerPhone,
+      campaign,
+      conversationId: conversationId || undefined,
+      twilioCallSid: twilioCallSid || undefined,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     });
 
-    // Update with callSid
-    const callData = activeCalls.get(callId);
-    if (callData) {
-      callData.callSid = call.sid;
-    }
-
-    // Create initial call log in MongoDB
+    // Create call log in MongoDB
     try {
       await CallLog.create({
         callId,
-        callSid: call.sid,
+        callSid: twilioCallSid,
+        conversationId: conversationId,
         customerPhone,
         campaign: {
           name: campaign.name,
@@ -86,44 +122,287 @@ export const initiateCall = async (req: Request, res: Response) => {
       });
       console.log(`[${ts()}] 💾 Call log created in MongoDB`);
     } catch (dbError) {
-      console.error(`[${ts()}] ⚠️  Failed to create call log:`, dbError);
+      console.error(`[${ts()}] ⚠️ Failed to create call log:`, dbError);
     }
 
-    console.log(`[${ts()}] ✅ Call initiated: ${call.sid}`);
+    // Polling fallback (NOT recommended at scale). Enable only when needed:
+    // ENABLE_POLLING_FALLBACK=true
+    // if (ENABLE_POLLING_FALLBACK && conversationId) {
+    //   startConversationPolling();
+    //   console.log(`[${ts()}] 🔄 Polling fallback enabled for ${conversationId}`);
+    // }
 
     res.json({
       success: true,
-      callSid: call.sid,
       callId,
+      conversationId,
+      twilioCallSid,
       message: `Call initiated to ${customerPhone}`,
     });
   } catch (error) {
     console.error(`[${ts()}] ❌ Error initiating call:`, error);
     res.status(500).json({ error: `Failed to initiate call: ${error}` });
   }
-};
+}
 
-export const outboundConnect = async (req: Request, res: Response) => {
-  const callId = req.query.callId as string;
+export const elevenLabsPostCallWebhook = async (
+  req: Request,
+  res: Response,
+) => {
+  try {
+    const payload = req.body || {};
+    // Don't log full payload in production – it can be very large.
+    if (DEBUG_VERBOSE) {
+      console.log(
+        `[${ts()}] 📥 ElevenLabs webhook received (type):`,
+        payload?.type || "unknown",
+      );
+    }
 
-  console.log(`[${ts()}] 📞 Outbound call connected: ${callId}`);
+    // Map ElevenLabs webhook payload structure: data is nested in payload.data
+    const data = payload?.data || payload;
+    const webhookType = payload?.type || "unknown";
+    const conversationId =
+      data?.conversation_id ||
+      data?.conversationId ||
+      payload?.conversation_id ||
+      payload?.conversationId;
+    const callIdFromVars =
+      data?.conversation_initiation_client_data?.dynamic_variables?.call_id ||
+      data?.conversation_initiation_client_data?.dynamicVariables?.call_id ||
+      payload?.dynamic_variables?.call_id ||
+      payload?.conversation_initiation_client_data?.dynamicVariables?.call_id;
 
-  // Convert https:// to wss:// for WebSocket
-  const wsUrl = SERVER_URL.replace(/^https?:\/\//, "wss://");
+    console.log(
+      `[${ts()}] 📥 ElevenLabs webhook received: ${webhookType} for conversation: ${conversationId || "unknown"}`,
+    );
 
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Connect>
-    <Stream url="${wsUrl}/call/marketing-stream?callId=${encodeURIComponent(callId)}">
-      <Parameter name="noiseReduction" value="true" />
-      <Parameter name="echoCancellation" value="true" />
-      <Parameter name="autoGainControl" value="true" />
-      <Parameter name="callId" value="${callId}" />
-    </Stream>
-  </Connect>
-</Response>`;
+    // Extract callId using same logic as real-time webhook
+    let callId: string | null = callIdFromVars || null;
+    if (!callId && conversationId) {
+      callId = await getCallIdByConversationId(conversationId);
+    }
+    if (!callId) {
+      console.log(
+        `[${ts()}] ⚠️ No callId found for conversation: ${conversationId || "unknown"}`,
+      );
+      return res.sendStatus(200);
+    }
 
-  res.type("text/xml").send(twiml);
+    // Check if call is already finalized to avoid duplicate processing
+    const existingLog = await CallLog.findOne({ callId }).exec();
+    if (
+      existingLog &&
+      existingLog.outcome &&
+      existingLog.outcome !== "in_progress" &&
+      existingLog.endedAt
+    ) {
+      console.log(
+        `[${ts()}] ⚠️ Call ${callId} already finalized with outcome: ${existingLog.outcome}. Skipping.`,
+      );
+      return res.sendStatus(200);
+    }
+
+    // Handle call_initiation_failure webhook
+    if (webhookType === "call_initiation_failure") {
+      const failureReason = data?.failure_reason || "unknown";
+      let outcome = "no_answer";
+      let summary = "Call failed to connect.";
+
+      // Map failure reasons to outcomes
+      switch (failureReason) {
+        case "busy":
+          outcome = "no_answer";
+          summary = "Customer's phone was busy.";
+          break;
+        case "no-answer":
+        case "no_answer":
+          outcome = "no_answer";
+          summary = "Customer did not answer the call.";
+          break;
+        case "failed":
+        case "error":
+          outcome = "no_answer";
+          summary = `Call failed: ${failureReason}`;
+          break;
+        default:
+          outcome = "no_answer";
+          summary = `Call failed: ${failureReason}`;
+      }
+
+      console.log(
+        `[${ts()}] 📞 Call initiation failed: ${failureReason} - marking as ${outcome}`,
+      );
+
+      await CallLog.findOneAndUpdate(
+        { callId },
+        {
+          $set: {
+            conversationId,
+            outcome,
+            summary,
+            endedAt: new Date(),
+            conversation: [], // Empty conversation for failed calls
+            callDuration: 0,
+          },
+        },
+      ).exec();
+
+      console.log(
+        `[${ts()}] 💾 Call failure finalized: ${outcome} - ${summary}`,
+      );
+      activeCalls.delete(callId);
+      return res.sendStatus(200);
+    }
+
+    // Handle post_call_transcription webhook (normal call completion)
+    // Extract and process transcript - map from data.transcript
+    const transcript =
+      data?.transcript ||
+      data?.messages ||
+      data?.conversation ||
+      payload?.transcript ||
+      payload?.messages ||
+      payload?.conversation ||
+      [];
+
+    // Check call status to determine if call ended
+    const callStatus = data?.status || payload?.status || "unknown";
+    const isCallDone =
+      callStatus === "done" ||
+      callStatus === "ended" ||
+      callStatus === "completed";
+
+    // If transcript is empty, try to get existing conversation from DB
+    let conversation: Array<{ role: "ai" | "customer"; message: string }> = [];
+    let shouldFinalize = false;
+    let finalOutcome: { outcome: string; summary: string } | null = null;
+
+    if (Array.isArray(transcript) && transcript.length > 0) {
+      // Process each message in transcript
+      for (const m of transcript as any[]) {
+        // Map roles: "agent" -> "ai", "user" -> "customer"
+        const role =
+          m.role === "agent" || m.role === "assistant" ? "ai" : "customer";
+        const message = String(m.message || m.text || m.content || "").trim();
+
+        if (message) {
+          // Log in real-time
+          if (role === "ai") {
+            console.log(`[${ts()}] 💬 AI: "${message}"`);
+          } else {
+            console.log(`[${ts()}] 🎤 Customer: "${message}"`);
+          }
+          conversation.push({ role, message });
+        }
+      }
+
+      // Store conversation in MongoDB (replace entire array to avoid duplicates)
+      if (conversation.length > 0) {
+        await CallLog.findOneAndUpdate(
+          { callId },
+          { $set: { conversation } },
+          { upsert: false },
+        ).exec();
+        console.log(
+          `[${ts()}] 💾 Stored ${conversation.length} messages in conversation`,
+        );
+        shouldFinalize = true;
+      }
+    } else {
+      // If transcript is empty, check if we should finalize as "no_answer"
+      if (isCallDone) {
+        // Call ended but no transcript - likely not answered
+        console.log(
+          `[${ts()}] 📞 Call ended with status "${callStatus}" but no transcript - marking as no_answer`,
+        );
+        finalOutcome = {
+          outcome: "no_answer",
+          summary: "Customer did not respond during the call.",
+        };
+        shouldFinalize = true;
+        conversation = []; // Empty conversation for no_answer
+      } else if (
+        existingLog &&
+        existingLog.conversation &&
+        Array.isArray(existingLog.conversation) &&
+        existingLog.conversation.length > 0
+      ) {
+        // Use existing conversation from DB if available
+        conversation = existingLog.conversation.map((c: any) => ({
+          role:
+            c.role === "ai" || c.role === "agent" || c.role === "assistant"
+              ? "ai"
+              : "customer",
+          message: String(c.message || c.text || c.content || ""),
+        }));
+        console.log(
+          `[${ts()}] 📋 Using existing conversation from DB (${conversation.length} messages)`,
+        );
+        shouldFinalize = true;
+      } else {
+        // No transcript, call not done, and no existing conversation - wait for more data
+        console.log(
+          `[${ts()}] ⚠️ No transcript provided, call status: ${callStatus}. Waiting for more data.`,
+        );
+        return res.sendStatus(200);
+      }
+    }
+
+    // Determine outcome and finalize
+    const result =
+      finalOutcome ||
+      (conversation.length > 0
+        ? determineOutcome(conversation)
+        : {
+          outcome: "no_answer",
+          summary: "Customer did not respond during the call.",
+        });
+
+    // Only finalize if we determined we should
+    if (!shouldFinalize) {
+      console.log(
+        `[${ts()}] ⚠️ Skipping finalization - no valid data to process.`,
+      );
+      return res.sendStatus(200);
+    }
+
+    // Map call duration from data.metadata.call_duration_secs (post_call_transcription structure)
+    const callDuration =
+      data?.metadata?.call_duration_secs ||
+      data?.metadata?.duration ||
+      data?.call_duration_secs ||
+      data?.duration ||
+      payload?.data?.metadata?.call_duration_secs ||
+      payload?.metadata?.call_duration_secs ||
+      payload?.duration ||
+      payload?.call_duration ||
+      existingLog?.callDuration ||
+      0;
+
+    await CallLog.findOneAndUpdate(
+      { callId },
+      {
+        $set: {
+          conversationId,
+          outcome: result.outcome,
+          summary: result.summary,
+          endedAt: new Date(),
+          conversation, // Set the full conversation array (may be empty for no_answer)
+          callDuration,
+        },
+      },
+    ).exec();
+
+    console.log(
+      `[${ts()}] 💾 Post-call webhook finalized: ${result.outcome} - ${result.summary}`,
+    );
+    activeCalls.delete(callId);
+    return res.sendStatus(200);
+  } catch (err) {
+    console.error(`[${ts()}] ❌ elevenLabsPostCallWebhook error:`, err);
+    return res.sendStatus(200);
+  }
 };
 
 export const callStatus = async (req: Request, res: Response) => {
@@ -134,7 +413,12 @@ export const callStatus = async (req: Request, res: Response) => {
   console.log(`[${ts()}] 📊 Call ${callId} status: ${status}`);
 
   // Update call log based on status
-  if (status === "completed" || status === "failed" || status === "busy" || status === "no-answer") {
+  if (
+    status === "completed" ||
+    status === "failed" ||
+    status === "busy" ||
+    status === "no-answer"
+  ) {
     const callData = activeCalls.get(callId);
 
     try {
@@ -142,7 +426,8 @@ export const callStatus = async (req: Request, res: Response) => {
       const existingLog = await CallLog.findOne({ callId });
 
       // Use conversation from activeCalls if available, otherwise from DB
-      const conversation = callData?.conversation || existingLog?.conversation || [];
+      const conversation =
+        callData?.conversation || existingLog?.conversation || [];
 
       let outcome = "in_progress";
       let summary = "";
@@ -192,11 +477,10 @@ export const callStatus = async (req: Request, res: Response) => {
       }
 
       // Update MongoDB
-      await CallLog.findOneAndUpdate(
-        { callId },
-        { $set: updateData }
+      await CallLog.findOneAndUpdate({ callId }, { $set: updateData });
+      console.log(
+        `[${ts()}] 💾 Call log updated: ${updateData.outcome || existingLog?.outcome || "N/A"}`,
       );
-      console.log(`[${ts()}] 💾 Call log updated: ${updateData.outcome || existingLog?.outcome || 'N/A'}`);
     } catch (dbError) {
       console.error(`[${ts()}] ⚠️  Failed to update call log:`, dbError);
     }
@@ -209,595 +493,20 @@ export const callStatus = async (req: Request, res: Response) => {
   }
 
   res.sendStatus(200);
-}
-
-
-export const healthCheck = async (req: Request, res: Response) => {
-  res.json({
-    status: "ok",
-    service: "marketing-call-agent",
-    twilioConfigured: !!(TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN && TWILIO_PHONE_NUMBER),
-    mongoConnected: mongoose.connection.readyState === 1,
-  });
-}
+};
 
 export const listActiveCalls = (req: Request, res: Response) => {
   const calls = Array.from(activeCalls.entries()).map(([id, data]) => ({
     callId: id,
+    conversationId: data.conversationId,
+    twilioCallSid: data.twilioCallSid,
     customerPhone: data.customerPhone,
     campaign: data.campaign.name,
+    messageCount: data.conversation.length,
+    startedAt: data.startedAt,
   }));
   res.json({ activeCalls: calls });
-}
-
-export const marketingCallStream = async (ws: WebSocket, req: Request) => {
-  console.log(`[${ts()}] 🔁 Marketing call WebSocket established`);
-
-  // ── Per-call state ──
-  let streamSid: string | null = null;
-  let latestMediaTimestamp = 0;
-  let callId: string | null = null;
-  let campaign: MarketingCampaign | null = null;
-
-  // Response tracking
-  let responseStartTimestampTwilio: number | null = null;
-  const markQueue: string[] = [];
-  let isSpeaking = false;
-  let isProcessingResponse = false;
-
-  // Text content tracking
-  let currentTextPartId: string | null = null;
-  let currentTextBuffer = "";
-
-  // Helper to add conversation entry and save to MongoDB
-  const addConversationEntry = async (role: "ai" | "customer", message: string) => {
-    if (callId && message.trim()) {
-      const entry = {
-        role,
-        message: message.trim(),
-        timestamp: new Date(),
-      };
-
-      // Add to in-memory store
-      const callData = activeCalls.get(callId);
-      if (callData) {
-        callData.conversation.push(entry);
-      }
-
-      // Also save to MongoDB incrementally (non-blocking)
-      CallLog.findOneAndUpdate(
-        { callId },
-        { $push: { conversation: entry } }
-      ).catch(err => console.error(`[${ts()}] ⚠️ Failed to save conversation entry:`, err));
-    }
-  };
-
-  // Helper to finalize call in DB before cleanup
-  const finalizeCallInDb = async (reason: string) => {
-    if (!callId) return;
-
-    const callData = activeCalls.get(callId);
-    if (!callData) return;
-
-    try {
-      // Determine outcome based on conversation
-      const result = determineOutcome(callData.conversation);
-
-      await CallLog.findOneAndUpdate(
-        { callId },
-        {
-          $set: {
-            outcome: result.outcome,
-            summary: result.summary + ` (${reason})`,
-            endedAt: new Date(),
-            conversation: callData.conversation, // Save final conversation
-          }
-        }
-      );
-      console.log(`[${ts()}] 💾 Call finalized in DB: ${result.outcome} (${reason})`);
-    } catch (err) {
-      console.error(`[${ts()}] ⚠️ Failed to finalize call in DB:`, err);
-    }
-  };
-
-  const sendMarkToTwilio = () => {
-    if (!streamSid) return;
-    ws.send(
-      JSON.stringify({
-        event: "mark",
-        streamSid,
-        mark: { name: "responsePart" },
-      })
-    );
-    markQueue.push("responsePart");
-  };
-
-  const clearTwilioBuffer = () => {
-    if (!streamSid) return;
-    ws.send(JSON.stringify({ event: "clear", streamSid }));
-    if (DEBUG_VERBOSE) console.log(`[${ts()}] 🧹 Cleared Twilio buffer`);
-  };
-
-  // ── ElevenLabs WebSocket (μ-law 8k) ──
-  let elevenLabsWs: WebSocket | null = null;
-
-  function initElevenLabsWs() {
-    const url =
-      `wss://api.elevenlabs.io/v1/text-to-speech/${ELEVEN_LABS_VOICE_ID}` +
-      `/stream-input?model_id=eleven_multilingual_v2&output_format=ulaw_8000`;
-    elevenLabsWs = new WebSocket(url);
-
-    elevenLabsWs.on("open", () => {
-      console.log(`[${ts()}] 🎙️  ElevenLabs WS OPEN`);
-      setTimeout(() => {
-        if (elevenLabsWs?.readyState === WebSocket.OPEN) {
-          elevenLabsWs.send(
-            JSON.stringify({
-              text: " ",
-              voice_settings: { stability: 0.5, similarity_boost: 0.8 },
-              xi_api_key: ELEVEN_LABS_API_KEY,
-            })
-          );
-        }
-      }, 30);
-    });
-
-    elevenLabsWs.on("message", (data: Buffer) => {
-      try {
-        const msg = JSON.parse(data.toString());
-
-        if (msg.audio && streamSid) {
-          if (!isSpeaking && responseStartTimestampTwilio == null) {
-            responseStartTimestampTwilio = latestMediaTimestamp;
-          }
-          isSpeaking = true;
-
-          ws.send(
-            JSON.stringify({
-              event: "media",
-              streamSid,
-              media: { payload: msg.audio },
-            })
-          );
-          sendMarkToTwilio();
-        }
-
-        if (msg.isFinal) {
-          isSpeaking = false;
-          console.log(`[${ts()}] 🔊 ElevenLabs TTS complete`);
-        }
-      } catch {
-        if (streamSid && data.length > 0) {
-          if (!isSpeaking && responseStartTimestampTwilio == null) {
-            responseStartTimestampTwilio = latestMediaTimestamp;
-          }
-          isSpeaking = true;
-
-          ws.send(
-            JSON.stringify({
-              event: "media",
-              streamSid,
-              media: { payload: data.toString("base64") },
-            })
-          );
-          sendMarkToTwilio();
-        }
-      }
-    });
-
-    elevenLabsWs.on("error", (err: Error) => {
-      console.error(`[${ts()}] ❌ ElevenLabs WS error:`, err);
-    });
-
-    elevenLabsWs.on("close", () => {
-      console.log(`[${ts()}] 🔕 ElevenLabs WS CLOSED - reconnecting...`);
-      setTimeout(() => {
-        if (streamSid) {
-          initElevenLabsWs();
-        }
-      }, 100);
-    });
-  }
-
-  initElevenLabsWs();
-
-  let greetingSent = false;
-
-  function speakWithElevenLabs(text: string, retries = 0) {
-    if (!elevenLabsWs || elevenLabsWs.readyState !== WebSocket.OPEN) {
-      if (retries > 10) {
-        console.error(`[${ts()}] ❌ ElevenLabs failed to connect after retries`);
-        return;
-      }
-      console.warn(`[${ts()}] ⚠️  ElevenLabs not ready, waiting... (retry ${retries})`);
-      if (elevenLabsWs?.readyState === WebSocket.CLOSED) initElevenLabsWs();
-      setTimeout(() => speakWithElevenLabs(text, retries + 1), 100);
-      return;
-    }
-
-    console.log(
-      `[${ts()}] 🗣️  TTS request: "${text.substring(0, 80)}${text.length > 80 ? "..." : ""}"`
-    );
-
-    try {
-      elevenLabsWs.send(JSON.stringify({ text, try_trigger_generation: true }));
-      setTimeout(() => {
-        if (elevenLabsWs?.readyState === WebSocket.OPEN) {
-          elevenLabsWs.send(JSON.stringify({ text: "" }));
-        }
-      }, 50);
-    } catch (err) {
-      console.error(`[${ts()}] ❌ Error sending to ElevenLabs:`, err);
-    }
-  }
-
-  // ── OpenAI Realtime WS (initialized after we get campaign data) ──
-  let openAiWs: WebSocket | null = null;
-  let keepAliveInterval: NodeJS.Timeout | null = null;
-
-  function initOpenAiSession() {
-    if (!campaign) {
-      console.error(`[${ts()}] ❌ Cannot init OpenAI session: no campaign data`);
-      return;
-    }
-
-    openAiWs = new WebSocket(
-      `wss://api.openai.com/v1/realtime?model=${REALTIME_MODEL}`,
-      {
-        headers: {
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-          "OpenAI-Beta": "realtime=v1",
-        },
-        handshakeTimeout: 10000,
-      }
-    );
-
-    openAiWs.on("open", () => {
-      console.log(`[${ts()}] 🔌 OpenAI Realtime WS OPEN`);
-
-      keepAliveInterval = setInterval(() => {
-        if (openAiWs?.readyState === WebSocket.OPEN) {
-          try {
-            openAiWs.ping();
-          } catch (err) {
-            console.error(`[${ts()}] Error sending keepalive:`, err);
-          }
-        }
-      }, 30000);
-
-
-      const instructions = buildMarketingInstructions(campaign!);
-      openAiWs!.send(
-        JSON.stringify({
-          type: "session.update",
-          session: {
-            modalities: ["text"],
-            instructions,
-            input_audio_format: "g711_ulaw",
-            input_audio_transcription: { model: "whisper-1" },
-            turn_detection: {
-              type: "server_vad",
-              threshold: 0.8,
-              prefix_padding_ms: 250,
-              silence_duration_ms: 800,
-            },
-            tools: [
-              {
-                type: "function",
-                name: "end_call",
-                description:
-                  "End the call. ONLY call this when customer says EXACTLY: 'goodbye', 'bye', 'not interested', 'no thanks', 'stop calling', 'I have to go', or 'hang up'. NEVER call this when customer says 'yes', 'sure', 'ok', 'thank you', 'thanks', 'interesting', or asks a question - those mean CONTINUE the conversation!",
-                parameters: {
-                  type: "object",
-                  properties: {},
-                },
-              },
-            ],
-            tool_choice: "auto",
-          },
-        })
-      );
-      console.log(`[${ts()}] ⬆️  session.update sent (marketing agent)`);
-
-      // Send initial greeting after a short delay
-      setTimeout(() => {
-        if (!greetingSent) {
-          greetingSent = true;
-          console.log(`[${ts()}] 👋 Triggering initial marketing greeting`);
-          // Trigger response to get the AI to start the conversation
-          if (openAiWs?.readyState === WebSocket.OPEN) {
-            openAiWs.send(JSON.stringify({ type: "response.create" }));
-          }
-        }
-      }, 500);
-    });
-
-    const handleCallerSpeechStarted = () => {
-      if (DEBUG_VERBOSE) console.log(`[${ts()}] 🗣️  Customer spoke; barge-in`);
-
-      if (isSpeaking && elevenLabsWs && elevenLabsWs.readyState === WebSocket.OPEN) {
-        try {
-          elevenLabsWs.send(JSON.stringify({ text: "" }));
-        } catch (err) {
-          console.error(`[${ts()}] Error interrupting TTS:`, err);
-        }
-        isSpeaking = false;
-      }
-
-      clearTwilioBuffer();
-
-      if (isProcessingResponse && openAiWs?.readyState === WebSocket.OPEN) {
-        try {
-          openAiWs.send(JSON.stringify({ type: "response.cancel" }));
-          isProcessingResponse = false;
-          if (DEBUG_VERBOSE) console.log(`[${ts()}] 🚫 Cancelled active response`);
-        } catch (err) {
-          console.error(`[${ts()}] Error cancelling response:`, err);
-        }
-      }
-
-      markQueue.length = 0;
-      responseStartTimestampTwilio = null;
-    };
-
-    openAiWs.on("message", (data: Buffer) => {
-      try {
-        const msg = JSON.parse(data.toString());
-
-        if (
-          DEBUG_VERBOSE &&
-          ![
-            "response.text.delta",
-            "response.text.done",
-            "response.content_part.added",
-            "response.content_part.delta",
-            "response.content_part.done",
-          ].includes(msg.type)
-        ) {
-          console.log(`[${ts()}] ⇣ OpenAI event: ${msg.type}`);
-        }
-
-        if (msg.type === "input_audio_buffer.speech_started") {
-          handleCallerSpeechStarted();
-        }
-
-        if (msg.type === "input_audio_buffer.speech_stopped") {
-          if (!isProcessingResponse) {
-            if (DEBUG_VERBOSE) console.log(`[${ts()}] 🎤 Customer stopped; creating response`);
-            isProcessingResponse = true;
-            setTimeout(() => {
-              if (openAiWs?.readyState === WebSocket.OPEN) {
-                openAiWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-                openAiWs.send(JSON.stringify({ type: "response.create" }));
-              }
-            }, 10);
-          }
-        }
-
-        if (msg.type === "response.content_part.added") {
-          const part = msg.part || msg.content_part || msg.content?.part || null;
-          const partType = part?.type || msg.part_type;
-          if (partType === "output_text" || partType === "text") {
-            currentTextPartId = msg.part_id || part?.id || null;
-            currentTextBuffer = "";
-            const initial = part?.text || msg.text || "";
-            if (initial) currentTextBuffer += initial;
-            if (DEBUG_VERBOSE)
-              console.log(`[${ts()}] 🧩 text part started: ${currentTextPartId}`);
-          }
-        }
-
-        if (msg.type === "response.content_part.delta") {
-          const partId = msg.part_id || msg.part?.id || null;
-          if (partId && partId === currentTextPartId) {
-            const delta = msg.delta || msg.text || "";
-            if (delta) currentTextBuffer += delta;
-          }
-        }
-
-        if (msg.type === "response.content_part.done") {
-          const partId = msg.part_id || msg.part?.id || null;
-          if (partId && partId === currentTextPartId) {
-            const rawText = currentTextBuffer.trim();
-            currentTextPartId = null;
-            currentTextBuffer = "";
-
-            if (rawText) {
-              console.log(`[${ts()}] 💬 AI: "${rawText}"`);
-              addConversationEntry("ai", rawText);
-              speakWithElevenLabs(rawText);
-            }
-          }
-        }
-
-        // Legacy fallback
-        if (msg.type === "response.text.delta" && msg.delta) {
-          currentTextBuffer += msg.delta;
-        }
-        if (msg.type === "response.text.done") {
-          const rawText =
-            (msg?.output_text && String(msg.output_text)) || currentTextBuffer.trim();
-          currentTextBuffer = "";
-
-          if (rawText) {
-            console.log(`[${ts()}] 💬 AI: "${rawText}"`);
-            addConversationEntry("ai", rawText);
-            speakWithElevenLabs(rawText);
-          }
-        }
-
-        // Transcripts - Track customer responses
-        if (msg.type === "conversation.item.input_audio_transcription.completed") {
-          const transcript = msg.transcript || "";
-          console.log(`[${ts()}] 🎤 Customer said: "${transcript}"`);
-          if (transcript.trim()) {
-            addConversationEntry("customer", transcript);
-          }
-        }
-
-        // Function calls
-        if (msg.type === "response.function_call_arguments.done") {
-          const functionName = msg.name;
-          const callIdFunc = msg.call_id;
-
-          console.log(`[${ts()}] 🔧 Function call: ${functionName}`);
-
-          if (functionName === "end_call") {
-            // Send function result back to OpenAI (required)
-            if (openAiWs?.readyState === WebSocket.OPEN) {
-              openAiWs.send(
-                JSON.stringify({
-                  type: "conversation.item.create",
-                  item: {
-                    type: "function_call_output",
-                    call_id: callIdFunc,
-                    output: JSON.stringify({ success: true }),
-                  },
-                })
-              );
-            }
-
-            // Speak goodbye directly instead of asking AI to generate one
-            const goodbyeMsg = "Thank you for your time! Have a great day. Goodbye!";
-            addConversationEntry("ai", goodbyeMsg);
-            speakWithElevenLabs(goodbyeMsg);
-
-            // End the call after the goodbye message plays
-            setTimeout(() => {
-              console.log(`[${ts()}] 📞 Ending marketing call`);
-              if (openAiWs?.readyState === WebSocket.OPEN) openAiWs.close();
-              if (elevenLabsWs?.readyState === WebSocket.OPEN) elevenLabsWs.close();
-              if (ws.readyState === WebSocket.OPEN) ws.close();
-              if (callId) activeCalls.delete(callId);
-            }, 4000);
-          }
-        }
-
-        if (msg.type === "response.done") {
-          if (DEBUG_VERBOSE) console.log(`[${ts()}] ✅ Response complete`);
-          isProcessingResponse = false;
-        }
-
-        if (msg.type === "response.cancelled") {
-          if (DEBUG_VERBOSE) console.log(`[${ts()}] 🚫 Response cancelled`);
-          isProcessingResponse = false;
-        }
-
-        if (msg.type === "error") {
-          const code = msg.error?.code;
-          if (
-            code === "input_audio_buffer_commit_empty" ||
-            code === "conversation_already_has_active_response"
-          ) {
-            if (DEBUG_VERBOSE) console.log(`[${ts()}] ⚠️ Expected error: ${code}`);
-          } else {
-            console.error(`[${ts()}] ❌ OpenAI error:`, msg);
-          }
-        }
-      } catch (err) {
-        console.error(`[${ts()}] Error parsing OpenAI message:`, err);
-      }
-    });
-
-    openAiWs.on("close", () => {
-      console.log(`[${ts()}] 🔕 OpenAI WS CLOSED`);
-      if (keepAliveInterval) {
-        clearInterval(keepAliveInterval);
-        keepAliveInterval = null;
-      }
-    });
-
-    openAiWs.on("error", (error: Error) => {
-      console.error(`[${ts()}] ❌ OpenAI WS error:`, error);
-    });
-  }
-
-  // ── Twilio → OpenAI ──
-  ws.on("message", async (raw: string) => {
-    const msg = JSON.parse(raw.toString());
-
-    if (msg.event === "start" && msg.start) {
-      streamSid = msg.start.streamSid;
-      console.log(`[${ts()}] ▶️  Twilio START: streamSid=${streamSid}`);
-
-      // Extract callId from custom parameters
-      if (msg.start.customParameters?.callId) {
-        callId = msg.start.customParameters.callId as string;
-        console.log(`[${ts()}] 📞 Call ID: ${callId}`);
-
-        const callData = activeCalls.get(callId!);
-        if (callData) {
-          campaign = callData.campaign;
-          console.log(`[${ts()}] 📣 Campaign loaded: ${campaign.name}`);
-
-          // Now initialize OpenAI with the campaign
-          initOpenAiSession();
-        } else {
-          console.error(`[${ts()}] ❌ No call data found for ${callId}`);
-          ws.close();
-          return;
-        }
-      } else {
-        console.error(`[${ts()}] ❌ No callId in custom parameters`);
-        ws.close();
-        return;
-      }
-
-      latestMediaTimestamp = 0;
-      responseStartTimestampTwilio = null;
-      markQueue.length = 0;
-      return;
-    }
-
-    if (msg.event === "media" && msg.media?.payload) {
-      latestMediaTimestamp = msg.media.timestamp;
-
-      if (openAiWs?.readyState === WebSocket.OPEN) {
-        openAiWs.send(
-          JSON.stringify({
-            type: "input_audio_buffer.append",
-            audio: msg.media.payload,
-          })
-        );
-      }
-      return;
-    }
-
-    if (msg.event === "mark") {
-      if (markQueue.length > 0) markQueue.shift();
-      return;
-    }
-
-    if (msg.event === "stop") {
-      console.log(`[${ts()}] ⏹️  Twilio STOP`);
-      if (openAiWs?.readyState === WebSocket.OPEN) openAiWs.close();
-      if (elevenLabsWs?.readyState === WebSocket.OPEN) elevenLabsWs.close();
-      // Don't delete activeCalls here - let status webhook handle it
-      return;
-    }
-  });
-
-  ws.on("close", async () => {
-    console.log(`[${ts()}] 🔚 Twilio WS CLOSED`);
-
-    if (keepAliveInterval) {
-      clearInterval(keepAliveInterval);
-      keepAliveInterval = null;
-    }
-
-    if (openAiWs?.readyState === WebSocket.OPEN) openAiWs.close();
-    if (elevenLabsWs?.readyState === WebSocket.OPEN) elevenLabsWs.close();
-
-    // Save call data to DB before cleanup (handles sudden disconnects)
-    if (callId) {
-      await finalizeCallInDb("WebSocket closed");
-      // Don't delete activeCalls here - let status webhook handle cleanup
-      // This ensures status webhook can still access the data if it hasn't run yet
-    }
-
-    streamSid = null;
-  });
-}
+};
 
 export const callLogs = async (req: Request, res: Response) => {
   try {
@@ -830,8 +539,7 @@ export const callLogs = async (req: Request, res: Response) => {
     console.error(`[${ts()}] ❌ Error fetching call logs:`, error);
     res.status(500).json({ error: "Failed to fetch call logs" });
   }
-}
-
+};
 
 // stats
 
@@ -907,14 +615,14 @@ export const callsByPhone = async (req: Request, res: Response) => {
     const phoneRegex = phone.replace(/\s+/g, "").replace(/^\+/, "");
 
     const logs = await CallLog.find({
-      customerPhone: { $regex: phoneRegex, $options: "i" }
+      customerPhone: { $regex: phoneRegex, $options: "i" },
     })
       .sort({ createdAt: -1 })
       .skip(Number(skip))
       .limit(Number(limit));
 
     const total = await CallLog.countDocuments({
-      customerPhone: { $regex: phoneRegex, $options: "i" }
+      customerPhone: { $regex: phoneRegex, $options: "i" },
     });
 
     // Calculate stats for this customer
@@ -964,9 +672,8 @@ export const customers = async (req: Request, res: Response) => {
       matchStage.outcome = outcome;
     }
 
-    const sortStage: any = sort === "calls"
-      ? { totalCalls: -1 }
-      : { lastCallAt: -1 };
+    const sortStage: any =
+      sort === "calls" ? { totalCalls: -1 } : { lastCallAt: -1 };
 
     const customers = await CallLog.aggregate([
       ...(Object.keys(matchStage).length > 0 ? [{ $match: matchStage }] : []),
@@ -996,25 +703,25 @@ export const customers = async (req: Request, res: Response) => {
             $size: {
               $filter: {
                 input: "$outcomes",
-                cond: { $eq: ["$$this", "interested"] }
-              }
-            }
+                cond: { $eq: ["$$this", "interested"] },
+              },
+            },
           },
           notInterestedCount: {
             $size: {
               $filter: {
                 input: "$outcomes",
-                cond: { $eq: ["$$this", "not_interested"] }
-              }
-            }
+                cond: { $eq: ["$$this", "not_interested"] },
+              },
+            },
           },
           noAnswerCount: {
             $size: {
               $filter: {
                 input: "$outcomes",
-                cond: { $eq: ["$$this", "no_answer"] }
-              }
-            }
+                cond: { $eq: ["$$this", "no_answer"] },
+              },
+            },
           },
         },
       },
@@ -1024,7 +731,9 @@ export const customers = async (req: Request, res: Response) => {
     ]);
 
     // Get total unique customers count
-    const totalCustomers = await CallLog.distinct("customerPhone").then(phones => phones.length);
+    const totalCustomers = await CallLog.distinct("customerPhone").then(
+      (phones) => phones.length,
+    );
 
     res.json({
       success: true,
@@ -1041,7 +750,9 @@ export const customers = async (req: Request, res: Response) => {
 export const customerStats = async (req: Request, res: Response) => {
   try {
     // Get unique customers count
-    const totalCustomers = await CallLog.distinct("customerPhone").then(phones => phones.length);
+    const totalCustomers = await CallLog.distinct("customerPhone").then(
+      (phones) => phones.length,
+    );
 
     // Get customers by their latest outcome
     const customersByOutcome = await CallLog.aggregate([
@@ -1097,9 +808,13 @@ export const customerStats = async (req: Request, res: Response) => {
       },
       repeatCallers: repeatCallers[0]?.total || 0,
       customersEverInterested: interestedCustomers[0]?.total || 0,
-      conversionRate: totalCustomers > 0
-        ? ((interestedCustomers[0]?.total || 0) / totalCustomers * 100).toFixed(2) + "%"
-        : "0%",
+      conversionRate:
+        totalCustomers > 0
+          ? (
+            ((interestedCustomers[0]?.total || 0) / totalCustomers) *
+            100
+          ).toFixed(2) + "%"
+          : "0%",
     });
   } catch (error) {
     console.error(`[${ts()}] ❌ Error fetching customer stats:`, error);

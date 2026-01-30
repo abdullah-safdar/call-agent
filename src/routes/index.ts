@@ -1,28 +1,29 @@
 
 import express from "express";
 import {
-    initiateCall, outboundConnect, callStatus, healthCheck,
+    initiateCall, callStatus,
     listActiveCalls, callLogs, callStats, callLogById,
-    callsByPhone, customers, customerStats
+    callsByPhone, customers, customerStats,
+
+    elevenLabsPostCallWebhook
 } from "../services/calls";
 
 
 const app = express();
 
-// ── Endpoint to initiate outbound marketing call ──
+// ── Endpoint to initiate outbound marketing call (ElevenLabs SDK) ──
 app.post("/call/initiate", initiateCall);
 
-// ── TwiML webhook for outbound call connection ──
-app.post("/call/outbound-connect", outboundConnect);
+// ── ElevenLabs Webhooks (production path) ──
 
-// ── Call status webhook ──
+app.post("/webhooks/elevenlabs/post-call", elevenLabsPostCallWebhook);
+
+
+// ── Call status webhook (legacy - for initiateCallls) ──
 app.post("/call/status", callStatus);
 
 
-// ── Health check endpoint ──
-app.get("/health", healthCheck);
 
-// ── List active calls ──
 app.get("/calls/active", listActiveCalls);
 
 // ── Get call logs from MongoDB ──

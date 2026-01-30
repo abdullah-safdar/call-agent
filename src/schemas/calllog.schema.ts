@@ -3,7 +3,10 @@ import mongoose from "mongoose";
 
 const callLogSchema = new mongoose.Schema({
   callId: { type: String, required: true, unique: true },
-  callSid: { type: String },
+  // Twilio Call SID (CA...)
+  callSid: { type: String, index: true },
+  // ElevenLabs conversation id (conv_...)
+  conversationId: { type: String, index: true },
   customerPhone: { type: String, required: true, index: true }, // Indexed for fast lookups by phone
   campaign: {
     name: { type: String, required: true },

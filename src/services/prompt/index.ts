@@ -64,6 +64,133 @@ Always speak in a natural and conversational tone.
 `;
 }
 
+// export function determineOutcome(conversation: Array<{ role: string; message: string }>): { outcome: string; summary: string } {
+//   const customerMessages = conversation
+//     .filter(c => c.role === "customer")
+//     .map(c => c.message.toLowerCase().trim());
+
+//   // Determine outcome
+//   if (customerMessages.length === 0) {
+//     return { outcome: "no_answer", summary: "Customer did not respond during the call." };
+//   }
+
+//   // Strong "not interested" indicators - these are definitive rejections
+//   const strongNotInterestedPhrases = [
+//     "not interested", "not interesting", "no interest", "dont want", "don't want",
+//     "stop calling", "don't call", "do not call", "remove me", "take me off",
+//     "leave me alone", "waste of time", "scam", "spam", "hang up", "hanging up",
+//     "not for me", "no way", "absolutely not", "never", "go away"
+//   ];
+
+//   // Moderate "not interested" indicators
+//   const moderateNotInterestedPhrases = [
+//     "no thanks", "no thank you", "not right now", "maybe later", "busy right now",
+//     "don't need", "do not need", "already have", "not today", "call back later",
+//     "i'm good", "im good", "no need", "pass"
+//   ];
+
+//   // End-of-call phrases (neutral but indicate ending)
+//   const endCallPhrases = ["goodbye", "bye-bye", "bye bye", "bye"];
+
+//   // Strong "interested" indicators - definitive interest
+//   const strongInterestedPhrases = [
+//     "i want to order", "i'd like to order", "place an order", "take my order",
+//     "i'll buy", "i will buy", "sign me up", "count me in", "i'm in", "im in",
+//     "tell me more", "how do i order", "where can i get", "send me details",
+//     "very interested", "definitely interested", "sounds great", "sounds perfect",
+//     "i'll take it", "i will take it", "book it", "reserve"
+//   ];
+
+//   // Moderate "interested" indicators (contextual acknowledgments)
+//   const moderateInterestedPhrases = [
+//     "sounds good", "that's great", "awesome", "perfect", "excellent",
+//     "what time", "where are you located", "how much does it cost",
+//     "what's the price", "tell me about"
+//   ];
+
+//   // Neutral phrases that should NOT count as interest
+//   const neutralPhrases = ["okay", "ok", "sure", "yes", "yeah", "hello", "hi", "thank you", "thanks"];
+
+//   // Helper function to check if text contains any phrase from array
+//   const containsAny = (text: string, phrases: string[]): boolean => {
+//     return phrases.some(phrase => text.includes(phrase));
+//   };
+
+//   // Get last 3 messages - these are most important for determining final sentiment
+//   const lastMessages = customerMessages.slice(-3);
+//   const lastMessage = customerMessages[customerMessages.length - 1] || "";
+//   const allText = customerMessages.join(" ");
+
+//   // PRIORITY 1: Check last message for strong rejection (highest priority)
+//   if (containsAny(lastMessage, strongNotInterestedPhrases)) {
+//     return {
+//       outcome: "not_interested",
+//       summary: `Customer clearly declined. Final response: "${lastMessage}"`
+//     };
+//   }
+
+//   // PRIORITY 2: Check last 3 messages for strong rejection
+//   const lastThreeText = lastMessages.join(" ");
+//   if (containsAny(lastThreeText, strongNotInterestedPhrases)) {
+//     return {
+//       outcome: "not_interested",
+//       summary: `Customer declined the offer. Key responses: ${lastMessages.join("; ")}`
+//     };
+//   }
+
+//   // PRIORITY 3: Check for strong interest in recent messages
+//   if (containsAny(lastThreeText, strongInterestedPhrases)) {
+//     return {
+//       outcome: "interested",
+//       summary: `Customer showed strong interest. Key responses: ${lastMessages.join("; ")}`
+//     };
+//   }
+
+//   // PRIORITY 4: Check last message for moderate rejection
+//   if (containsAny(lastMessage, moderateNotInterestedPhrases)) {
+//     return {
+//       outcome: "not_interested",
+//       summary: `Customer declined the offer. Final response: "${lastMessage}"`
+//     };
+//   }
+
+//   // PRIORITY 5: Check for moderate interest with no rejection signals
+//   const hasModerateInterest = containsAny(allText, moderateInterestedPhrases);
+//   const hasAnyRejection = containsAny(allText, [...strongNotInterestedPhrases, ...moderateNotInterestedPhrases]);
+
+//   if (hasModerateInterest && !hasAnyRejection) {
+//     return {
+//       outcome: "interested",
+//       summary: `Customer showed interest in the promotion. Key responses: ${lastMessages.join("; ")}`
+//     };
+//   }
+
+//   // PRIORITY 6: If last message is just "bye" with no other context, mark as not interested
+//   if (containsAny(lastMessage, endCallPhrases) && lastMessage.length < 15) {
+//     return {
+//       outcome: "not_interested",
+//       summary: `Customer ended call without expressing interest. Final response: "${lastMessage}"`
+//     };
+//   }
+
+//   // PRIORITY 7: Check if conversation was just neutral acknowledgments
+//   const nonNeutralMessages = customerMessages.filter(msg => !neutralPhrases.includes(msg.trim()));
+//   if (nonNeutralMessages.length === 0) {
+//     return {
+//       outcome: "not_interested",
+//       summary: `Customer gave only neutral responses without clear interest. Responses: ${customerMessages.join("; ")}`
+//     };
+//   }
+
+//   // Default: If we can't determine, lean towards not_interested
+//   return {
+//     outcome: "not_interested",
+//     summary: `Call ended without clear commitment. Last responses: ${lastMessages.join("; ")}`
+//   };
+// }
+
+
+
 export function determineOutcome(conversation: Array<{ role: string; message: string }>): { outcome: string; summary: string } {
   const customerMessages = conversation
     .filter(c => c.role === "customer")
@@ -75,45 +202,101 @@ export function determineOutcome(conversation: Array<{ role: string; message: st
   }
 
   // Strong "not interested" indicators - these are definitive rejections
+  // English + Greek
   const strongNotInterestedPhrases = [
+    // English
     "not interested", "not interesting", "no interest", "dont want", "don't want",
     "stop calling", "don't call", "do not call", "remove me", "take me off",
     "leave me alone", "waste of time", "scam", "spam", "hang up", "hanging up",
-    "not for me", "no way", "absolutely not", "never", "go away"
+    "not for me", "no way", "absolutely not", "never", "go away",
+    // Greek
+    "δεν ενδιαφέρομαι", "δεν με ενδιαφέρει", "δεν θέλω", "σταμάτα να με καλείς",
+    "μην με καλείς", "άσε με ήσυχο", "άφησέ με", "δεν χρειάζομαι", "όχι ευχαριστώ",
+    "ποτέ", "φύγε", "απάτη", "spam", "κλείσε", "κλείσε το τηλέφωνο",
+    "δεν είναι για μένα", "με κανέναν τρόπο", "απολύτως όχι"
   ];
 
   // Moderate "not interested" indicators
+  // English + Greek
   const moderateNotInterestedPhrases = [
+    // English
     "no thanks", "no thank you", "not right now", "maybe later", "busy right now",
     "don't need", "do not need", "already have", "not today", "call back later",
-    "i'm good", "im good", "no need", "pass"
+    "i'm good", "im good", "no need", "pass",
+    // Greek
+    "όχι ευχαριστώ", "όχι τώρα", "ίσως αργότερα", "είμαι απασχολημένος",
+    "δεν χρειάζομαι", "έχω ήδη", "όχι σήμερα", "κάλεσε αργότερα",
+    "είμαι εντάξει", "δεν χρειάζεται", "όχι", "όχι τώρα"
   ];
 
   // End-of-call phrases (neutral but indicate ending)
-  const endCallPhrases = ["goodbye", "bye-bye", "bye bye", "bye"];
+  // English + Greek
+  const endCallPhrases = [
+    // English
+    "goodbye", "bye-bye", "bye bye", "bye",
+    // Greek
+    "αντίο", "γεια", "γεια σου", "γεια σας", "τα λέμε", "θα τα πούμε"
+  ];
 
   // Strong "interested" indicators - definitive interest
+  // English + Greek
   const strongInterestedPhrases = [
+    // English
     "i want to order", "i'd like to order", "place an order", "take my order",
     "i'll buy", "i will buy", "sign me up", "count me in", "i'm in", "im in",
     "tell me more", "how do i order", "where can i get", "send me details",
     "very interested", "definitely interested", "sounds great", "sounds perfect",
-    "i'll take it", "i will take it", "book it", "reserve"
+    "i'll take it", "i will take it", "book it", "reserve",
+    // Greek
+    "θέλω να παραγγείλω", "θα ήθελα να παραγγείλω", "πάρε την παραγγελία μου",
+    "θα αγοράσω", "γράψε με", "μετράω", "είμαι μέσα", "πες μου περισσότερα",
+    "πώς παραγγέλνω", "πού μπορώ να πάρω", "στείλε μου λεπτομέρειες",
+    "πολύ ενδιαφέρομαι", "σίγουρα ενδιαφέρομαι", "ακούγεται υπέροχο",
+    "θα το πάρω", "κράτησε", "κάνε κράτηση", "κράτησέ το",
+    "πολύ ενδιαφέρει", "σίγουρα ενδιαφέρει", "πολύ μου ενδιαφέρει"
   ];
 
   // Moderate "interested" indicators (contextual acknowledgments)
+  // English + Greek
   const moderateInterestedPhrases = [
+    // English
     "sounds good", "that's great", "awesome", "perfect", "excellent",
     "what time", "where are you located", "how much does it cost",
-    "what's the price", "tell me about"
+    "what's the price", "tell me about", "interested",
+    // Greek - Multiple variations of "I'm interested"
+    "ενδιαφέρομαι", "ενδιαφέρει", "μου ενδιαφέρει", "μ' ενδιαφέρει",
+    "ενδιαφερόμενος", "ενδιαφερόμενη", "ενδιαφερόμαστε",
+    "ακούγεται καλό", "αυτό είναι υπέροχο", "τέλειο", "εξαιρετικό",
+    "τι ώρα", "πού βρίσκεστε", "πόσο κοστίζει", "ποια είναι η τιμή",
+    "πες μου για", "μου αρέσει", "καλή ιδέα", "ναι ενδιαφέρομαι",
+    "ναι μου ενδιαφέρει", "ναι ενδιαφέρει"
   ];
 
   // Neutral phrases that should NOT count as interest
-  const neutralPhrases = ["okay", "ok", "sure", "yes", "yeah", "hello", "hi", "thank you", "thanks"];
+  // English + Greek
+  const neutralPhrases = [
+    // English
+    "okay", "ok", "sure", "yes", "yeah", "hello", "hi", "thank you", "thanks",
+    // Greek
+    "εντάξει", "οκ", "ναι", "γεια", "γεια σου", "γεια σας", "ευχαριστώ",
+    "ευχαριστώ πολύ", "παρακαλώ", "εντάξει", "καλά"
+  ];
 
   // Helper function to check if text contains any phrase from array
+  // Normalizes text by removing punctuation for better matching
+  const normalizeText = (text: string): string => {
+    return text
+      .replace(/[.,!?;:]/g, ' ')  // Replace punctuation with spaces
+      .replace(/\s+/g, ' ')       // Normalize whitespace
+      .trim();
+  };
+
   const containsAny = (text: string, phrases: string[]): boolean => {
-    return phrases.some(phrase => text.includes(phrase));
+    const normalizedText = normalizeText(text);
+    return phrases.some(phrase => {
+      const normalizedPhrase = normalizeText(phrase);
+      return normalizedText.includes(normalizedPhrase);
+    });
   };
 
   // Get last 3 messages - these are most important for determining final sentiment
@@ -146,7 +329,20 @@ export function determineOutcome(conversation: Array<{ role: string; message: st
     };
   }
 
-  // PRIORITY 4: Check last message for moderate rejection
+  // PRIORITY 4: Check last message for moderate interest (before checking rejection)
+  // This catches cases like "Μου ενδιαφέρει" (I'm interested)
+  if (containsAny(lastMessage, moderateInterestedPhrases)) {
+    // Only return interested if there's no strong rejection
+    const hasStrongRejection = containsAny(allText, strongNotInterestedPhrases);
+    if (!hasStrongRejection) {
+      return {
+        outcome: "interested",
+        summary: `Customer expressed interest. Final response: "${lastMessage}"`
+      };
+    }
+  }
+
+  // PRIORITY 5: Check last message for moderate rejection
   if (containsAny(lastMessage, moderateNotInterestedPhrases)) {
     return {
       outcome: "not_interested",
@@ -154,7 +350,7 @@ export function determineOutcome(conversation: Array<{ role: string; message: st
     };
   }
 
-  // PRIORITY 5: Check for moderate interest with no rejection signals
+  // PRIORITY 6: Check for moderate interest anywhere in conversation with no rejection signals
   const hasModerateInterest = containsAny(allText, moderateInterestedPhrases);
   const hasAnyRejection = containsAny(allText, [...strongNotInterestedPhrases, ...moderateNotInterestedPhrases]);
 
@@ -165,7 +361,7 @@ export function determineOutcome(conversation: Array<{ role: string; message: st
     };
   }
 
-  // PRIORITY 6: If last message is just "bye" with no other context, mark as not interested
+  // PRIORITY 7: If last message is just "bye" with no other context, mark as not interested
   if (containsAny(lastMessage, endCallPhrases) && lastMessage.length < 15) {
     return {
       outcome: "not_interested",
@@ -173,7 +369,7 @@ export function determineOutcome(conversation: Array<{ role: string; message: st
     };
   }
 
-  // PRIORITY 7: Check if conversation was just neutral acknowledgments
+  // PRIORITY 8: Check if conversation was just neutral acknowledgments
   const nonNeutralMessages = customerMessages.filter(msg => !neutralPhrases.includes(msg.trim()));
   if (nonNeutralMessages.length === 0) {
     return {
