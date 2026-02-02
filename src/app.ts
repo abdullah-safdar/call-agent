@@ -3,8 +3,7 @@ import express from "express";
 import ExpressWs from "express-ws";
 import cors from "cors";
 import {
-  ELEVEN_LABS_API_KEY, ELEVEN_LABS_AGENT_ID, TWILIO_ACCOUNT_SID,
-  TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER, SERVER_URL,
+  ELEVEN_LABS_API_KEY, ELEVEN_LABS_AGENT_ID,
   MONGODB_URI, PORT
 } from "./constants";
 import mongoose from "mongoose";
@@ -22,12 +21,12 @@ if (!ELEVEN_LABS_AGENT_ID) {
   console.error("   Configure with μ-law 8000 Hz for both input and output for Twilio compatibility");
   process.exit(1);
 }
-if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER) {
-  console.warn("⚠️  Missing Twilio credentials - outbound calls will not work");
-}
-if (!SERVER_URL) {
-  console.warn("⚠️  Missing SERVER_URL - set this to your public URL (e.g., ngrok URL)");
-}
+// if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER) {
+//   console.warn("⚠️  Missing Twilio credentials - outbound calls will not work");
+// }
+// if (!SERVER_URL) {
+//   console.warn("⚠️  Missing SERVER_URL - set this to your public URL (e.g., ngrok URL)");
+// }
 
 // ───────────────── MongoDB Connection ─────────────────
 async function connectToMongoDB() {
@@ -70,17 +69,17 @@ async function startServer() {
   console.log("📋 Configuration:");
   console.log(`   - ElevenLabs API: ${ELEVEN_LABS_API_KEY ? "✅ Configured" : "❌ Missing"}`);
   console.log(`   - ElevenLabs Agent: ${ELEVEN_LABS_AGENT_ID ? "✅ Configured" : "❌ Missing"}`);
-  console.log(`   - Twilio: ${TWILIO_ACCOUNT_SID ? "✅ Configured" : "❌ Missing"}`);
-  console.log(`   - Server URL: ${SERVER_URL ? `✅ ${SERVER_URL}` : "❌ Missing (required for outbound calls)"}`);
+  // console.log(`   - Twilio: ${TWILIO_ACCOUNT_SID ? "✅ Configured" : "❌ Missing"}`);
+  // console.log(`   - Server URL: ${SERVER_URL ? `✅ ${SERVER_URL}` : "❌ Missing (required for outbound calls)"}`);
   console.log(`   - MongoDB: ${mongoConnected ? "✅ Connected" : "❌ Not connected"}`);
   console.log("");
 
-  if (!SERVER_URL) {
-    console.log("⚠️  To make outbound calls, you need a public URL.");
-    console.log("   Run ngrok: ngrok http 5050");
-    console.log("   Then set SERVER_URL in .env to your ngrok URL (e.g., https://abc123.ngrok.io)");
-    console.log("");
-  }
+  // if (!SERVER_URL) {
+  //   console.log("⚠️  To make outbound calls, you need a public URL.");
+  //   console.log("   Run ngrok: ngrok http 5050");
+  //   console.log("   Then set SERVER_URL in .env to your ngrok URL (e.g., https://abc123.ngrok.io)");
+  //   console.log("");
+  // }
 
   app.listen(PORT, () => {
     console.log(`🚀 Server started on port ${PORT}`);
@@ -109,12 +108,12 @@ async function startServer() {
     console.log(`     -H "Content-Type: application/json" \\`);
     console.log(`     -d '{"customerPhone": "+1234567890", "campaign": {"name": "Pizza Palace", "prompt": "Promotion: 50% off all pizzas this weekend!\\nValid until: Sunday\\nSpecial items: Margherita, Pepperoni"}}'`);
     console.log("");
-    if (SERVER_URL) {
-      console.log("⚙️  Configure webhooks in ElevenLabs Agent Settings → Events:");
-      console.log(`   Events URL: ${SERVER_URL}/webhooks/elevenlabs`);
-      console.log(`   Post-call URL: ${SERVER_URL}/webhooks/elevenlabs/post-call`);
-      console.log("");
-    }
+    // if (SERVER_URL) {
+    //   console.log("⚙️  Configure webhooks in ElevenLabs Agent Settings → Events:");
+    //   console.log(`   Events URL: ${SERVER_URL}/webhooks/elevenlabs`);
+    //   console.log(`   Post-call URL: ${SERVER_URL}/webhooks/elevenlabs/post-call`);
+    //   console.log("");
+    // }
   });
 }
 

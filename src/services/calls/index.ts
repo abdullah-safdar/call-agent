@@ -17,6 +17,7 @@ import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 const elevenLabsClient = new ElevenLabsClient({
   environment: "https://api.elevenlabs.io",
   apiKey: ELEVEN_LABS_API_KEY,
+
 });
 
 // core call mechanism endpoint
