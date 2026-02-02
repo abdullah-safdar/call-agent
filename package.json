@@ -23,7 +23,6 @@
     "express-ws": "^5.0.2",
     "mongoose": "^9.1.5",
     "node-fetch": "^3.3.2",
-    "openai": "^5.23.0",
     "redis": "^5.8.3",
     "tsx": "^4.20.5",
     "twilio": "^5.9.0",
